@@ -5,6 +5,33 @@ import sys
 import attr
 
 
+class PeekableFile(object):
+
+    def __init__(self, fp):
+        self.fp = fp
+        self.lno = 0
+        a, b = itertools.tee(line.rstrip("\n") for line in fp)
+        self.peeked = next(b, None)
+        count = itertools.count(1)
+        self._it = zip(count, a, itertools.chain(b, [None]))
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.lno, line, self.peeked = next(self._it)
+        return line
+
+    def peek(self):
+        return self.peeked
+
+    def exception(self, message):
+        raise ValueError("{}:{}: {}".format(
+            self.fp.name,
+            self.lno,
+            message))
+
+
 @attr.s
 class PatchSet(object):
     preamble = attr.ib(default=attr.Factory(list))
@@ -14,89 +41,196 @@ class PatchSet(object):
     def empty(self):
         return not bool(self.preamble or self.patched_files)
 
+    @classmethod
+    def _from_peekable(cls, it):
+        ps = PatchSet()
+        while True:
+            next_line = it.peek()
+            if PatchedFile._is_start_line(next_line):
+                ps.patched_files.append(PatchedFile._from_peekable(it))
+            elif ps.patched_files:
+                break
+            else:
+                ps.preamble.append(next(it))
+            if it.peek() is None:
+                break
+        return ps
+
+    def __str__(self):
+        parts = self.preamble[:]
+        for patched_file in self.patched_files:
+            parts.append(str(patched_file))
+        return '\n'.join(parts)
+
 
 @attr.s
 class PatchedFile(object):
-    RE_SOURCE_HEADER = re.compile(
+    _RE_SOURCE_HEADER = re.compile(
         r'^--- (?P<filename>[^\t\n]+)(?:\t(?P<timestamp>[^\n]+))?')
-    RE_TARGET_HEADER = re.compile(
+    _RE_TARGET_HEADER = re.compile(
         r'^\+\+\+ (?P<filename>[^\t\n]+)(?:\t(?P<timestamp>[^\n]+))?')
-    is_start_line = RE_SOURCE_HEADER.match
 
-    source_file = attr.ib(default=None)
-    target_file = attr.ib(default=None)
-    source_timestamp = attr.ib(default=None)
-    target_timestamp = attr.ib(default=None)
-    hunks = attr.ib(default=attr.Factory(list))
+    _source_header = attr.ib(repr=False)
+    _target_header = attr.ib(repr=False)
+    source_file = attr.ib()
+    target_file = attr.ib()
+    source_timestamp = attr.ib()
+    target_timestamp = attr.ib()
+    hunks = attr.ib(default=attr.Factory(list), repr=False)
     git_header = attr.ib(default=None)
 
-    @staticmethod
-    def is_git_diff_header_line(line):
-        return line.startswith('diff --git ')
+    @classmethod
+    def _is_start_line(cls, line):
+        if cls._RE_SOURCE_HEADER.match(line) is not None:
+            return True
+        elif GitExtendedHeader._is_start_line(line):
+            return True
+        return False
+
+    @classmethod
+    def _from_peekable(cls, it):
+        git_header = None
+        if GitExtendedHeader._is_start_line(it.peek()):
+            git_header = GitExtendedHeader._from_peekable(it)
+        source_line = next(it)
+        source_match = PatchedFile._RE_SOURCE_HEADER.match(source_line)
+        if not source_match:
+            it.exception("malformed --- line")
+        try:
+            target_line = next(it)
+        except StopIteration:
+            it.exception("incomplete patch: missing +++ line")
+        target_match = PatchedFile._RE_TARGET_HEADER.match(target_line)
+        if not target_match:
+            it.exception("malformed +++ line")
+        obj = cls(
+            source_header=source_line,
+            target_header=target_line,
+            source_file=source_match.group('filename'),
+            source_timestamp=source_match.group('timestamp'),
+            target_file=target_match.group('filename'),
+            target_timestamp=target_match.group('timestamp'),
+            git_header=git_header)
+        while True:
+            next_line = it.peek()
+            if next_line is None or not Hunk._is_header_line(next_line):
+                break
+            obj.hunks.append(Hunk._from_peekable(it))
+        return obj
+
+    def __str__(self):
+        parts = []
+        if self.git_header:
+            parts.append(str(self.git_header))
+        parts.append(self._source_header)
+        parts.append(self._target_header)
+        for hunk in self.hunks:
+            parts.append(str(hunk))
+        return '\n'.join(parts)
 
 
 @attr.s
 class Hunk(object):
-    source_start = attr.ib(default=None)
-    source_length = attr.ib(default=None)
-    target_start = attr.ib(default=None)
-    target_length = attr.ib(default=None)
-    header = attr.ib(default=None)
-    lines = attr.ib(default=attr.Factory(list))
+    _header_line = attr.ib(repr=False)
+    source_start = attr.ib()
+    source_length = attr.ib()
+    target_start = attr.ib()
+    target_length = attr.ib()
+    section = attr.ib()
+    lines = attr.ib(default=attr.Factory(list), repr=False)
 
-    RE_HEADER = re.compile(
+    _RE_HEADER = re.compile(
         r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@"
         r"(?: (.*))?")
-    is_header_line = RE_HEADER.match
 
     @classmethod
-    def from_header_line(cls, line):
-        m = Hunk.RE_HEADER.match(line)
+    def _is_header_line(cls, line):
+        return cls._RE_HEADER.match(line) is not None
+
+    @classmethod
+    def _from_peekable(cls, it):
+        line = next(it)
+        m = Hunk._RE_HEADER.match(line)
         if not m:
             raise ValueError("Invalid hunk header line: {!r}".format(line))
-        a, b, c, d, header = m.groups()
-        return cls(
+        a, b, c, d, section = m.groups()
+        hunk = cls(
+            header_line=line,
             source_start=int(a),
             source_length=int(b) if b else 1,
             target_start=int(c),
             target_length=int(d) if d else 1,
-            header=header)
+            section=section)
+        source_seen = target_seen = 0
+        while True:
+            line = next(it, None)
+            if line is None:
+                it.exception("incomplete patch hunk")
+            line_obj = Line._from_string(line)
+            if line_obj.type != '+':
+                line_obj.source_line = hunk.source_start + source_seen
+                source_seen += 1
+            if line_obj.type != '-':
+                line_obj.target_line = hunk.target_start + target_seen
+                target_seen += 1
+            hunk.lines.append(line_obj)
+            if (hunk.source_length == source_seen and
+                    hunk.target_length == target_seen):
+                break
+        return hunk
+
+    def __str__(self):
+        return "{}\n{}".format(
+            self._header_line,
+            "\n".join(str(line) for line in self.lines))
 
     @property
     def source_lines(self):
-        return [line for line in self.lines if not line.is_added]
+        return [line for line in self.lines if not line.added]
 
     @property
     def target_lines(self):
-        return [line for line in self.lines if not line.is_removed]
+        return [line for line in self.lines if not line.removed]
 
 
 @attr.s
 class Line(object):
+    _line = attr.ib(repr=False)
     type = attr.ib()
     value = attr.ib()
     source_line = attr.ib(default=None)
     target_line = attr.ib(default=None)
 
+    def __str__(self):
+        return self._line
+
     @classmethod
-    def from_string(cls, s):
-        return cls(type=s[0], value=s[1:])
+    def _from_string(cls, s):
+        obj = cls(
+            line=s,
+            type=s[0],
+            value=s[1:])
+        assert obj.type in (' -+')
+        return obj
 
     @property
-    def is_added(self):
+    def added(self):
         return self.type == '+'
 
     @property
-    def is_removed(self):
+    def removed(self):
         return self.type == '-'
 
     @property
-    def is_context(self):
+    def context(self):
         return self.type == ' '
 
 
 @attr.s
 class GitExtendedHeader(object):
+    _lines = attr.ib(repr=False)
+    source_name = attr.ib()
+    target_name = attr.ib()
     old_mode = attr.ib(default=None)
     new_mode = attr.ib(default=None)
     deleted_file_mode = attr.ib(default=None)
@@ -111,10 +245,41 @@ class GitExtendedHeader(object):
     index_to_hash = attr.ib(default=None)
     index_mode = attr.ib(default=None)
 
+    _RE_HEADER = re.compile(
+        r'^diff --git '
+        r'"?a/(?P<source_name>.*?)"? '
+        r'"?b/(?P<target_name>.*?)"?')
+
     @classmethod
-    def from_lines(cls, lines):
-        header = cls()
-        for line in lines:
+    def _is_start_line(cls, line):
+        return line.startswith('diff --git ')
+
+    @classmethod
+    def _from_peekable(cls, it):
+        # First line contains two names, which may contain confusing escaping.
+        #   diff --git a/file b/file
+        #   diff --git "a/a b c\n\txyz" "b/a b c\n\txyz"
+        #   diff --git a/a b b/a b
+        #   diff --git a/b/b a/b/a b b/b/b a/b/a b
+        line = next(it)
+        m = cls._RE_HEADER.match(line)
+        if not m:
+            it.exception("malformed extended git patch header line")
+        source_name, target_name = m.group('source_name', 'target_name')
+        if '"' in line:
+            # Attempt to unescape things like \t.
+            source_name = source_name.encode('ascii').decode('unicode_escape')
+            target_name = target_name.encode('ascii').decode('unicode_escape')
+        header = cls([line], source_name, target_name)
+
+        while True:
+            next_line = it.peek()
+            if next_line is None:
+                break
+            if next_line.startswith('--- '):
+                break
+            line = next(it)
+            header._lines.append(line)
             parts = line.split()
             value = parts[-1]
             if line.startswith('old mode'):
@@ -138,108 +303,34 @@ class GitExtendedHeader(object):
             elif line.startswith('dissimilarity index'):
                 header.dissimilarity_index = int(value[:-1])
             elif line.startswith('index'):
-                hashes = parts[-2].split('..')
+                hashes = parts[1].split('..')
                 header.index_from_hash, header.index_to_hash = hashes
-                header.index_mode = value
+                if len(parts) == 3:
+                    header.index_mode = value
             else:
                 raise ValueError(
                     "Unknown git extended diff header line: {!r}"
                     .format(line))
         return header
 
-
-def iter_lines(iterable):
-    # For an iterable with 3 items this yields:
-    #   (0, None, 'first')
-    #   (1, 'first', 'second')
-    #   (2, 'second', 'third')
-    #   (3, 'third', None)
-    g = (line.rstrip("\n") for line in iterable)
-    a, b = itertools.tee(g)
-    count = itertools.count(0)
-    return zip(count, itertools.chain([None], a), itertools.chain(b, [None]))
+    def __str__(self):
+        return '\n'.join(self._lines)
 
 
-def parse_patch_set(it):
-    patch_set = PatchSet()
-    for lno, line, next_line in it:
-        if line is not None:
-            patch_set.preamble.append(line)
-        if next_line is not None:
-            if PatchedFile.is_git_diff_header_line(next_line):
-                patched_file = parse_git_patched_file(it)
-                patch_set.patched_files.append(patched_file)
-            elif PatchedFile.is_start_line(next_line):
-                patched_file = parse_patched_file(it)
-                patch_set.patched_files.append(patched_file)
-    if not patch_set.empty:
-        yield patch_set
-
-
-def parse_patched_file(it):
-    pf = PatchedFile()
-
-    lno, line, next_line = next(it)
-    m = PatchedFile.RE_SOURCE_HEADER.match(line)
-    if not m:
-        raise ValueError("Invalid --- line: {!r}".format(line))
-    pf.source_file, pf.source_timestamp = m.group('filename', 'timestamp')
-
-    lno, line, next_line = next(it)
-    if not m:
-        raise ValueError("Invalid +++ line: {!r}".format(line))
-    pf.target_file, pf.target_timestamp = m.group('filename', 'timestamp')
-
-    if Hunk.is_header_line(next_line):
-        pf.hunks.extend(parse_hunks(it))
-
-    return pf
-
-
-def parse_git_patched_file(it):
-    lno, line, next_line = next(it)
-    assert PatchedFile.is_git_diff_header_line(line)
-    # TODO: extract a/ and b/ values?
-
-    header_lines = []
-    while not PatchedFile.is_start_line(next_line):
-        lno, line, next_line = next(it)
-        header_lines.append(line.rstrip())
-
-    patched_file = parse_patched_file(it)
-    patched_file.git_header = GitExtendedHeader.from_lines(header_lines)
-    return patched_file
-
-
-def parse_hunks(it):
-    for lno, line, next_line in it:
-        hunk = Hunk.from_header_line(line)
-        n_source = n_target = 0
-        for lno, line, next_line in it:
-            line_obj = Line.from_string(line)
-            if line_obj.type != '+':
-                n_source += 1
-                line_obj.source_line = hunk.source_start + n_source
-            if line_obj.type != '-':
-                n_target += 1
-                line_obj.target_line = hunk.target_start + n_target
-            hunk.lines.append(line_obj)
-            if (hunk.source_length == n_source and
-                    hunk.target_length == n_target):
-                break
-        yield hunk
-
-        if next_line is None or not Hunk.is_header_line(next_line):
-            break
-
-
-def parse(fp):
-    it = iter_lines(fp)
-    for patch_set in parse_patch_set(it):
+def parse_patch_sets(fp):
+    it = PeekableFile(fp)
+    while it.peek() is not None:
+        patch_set = PatchSet._from_peekable(it)
         yield patch_set
 
 
 if __name__ == '__main__':
     with open(sys.argv[1]) as fp:
-        for patch_set in parse(fp):
-            print(patch_set)
+        for patch_set in parse_patch_sets(fp):
+            print('patch set:', repr(patch_set))
+            for patched_file in patch_set.patched_files:
+                print('patched file:', repr(patched_file))
+                for hunk in patched_file.hunks:
+                    print('hunk:', repr(hunk))
+                    for line in hunk.lines:
+                        print('line:', repr(line))
