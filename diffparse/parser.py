@@ -46,14 +46,14 @@ class PatchSet(object):
         ps = PatchSet()
         while True:
             next_line = it.peek()
+            if it.peek() is None:
+                break
             if PatchedFile._is_start_line(next_line):
                 ps.patched_files.append(PatchedFile._from_peekable(it))
             elif ps.patched_files:
                 break
             else:
                 ps.preamble.append(next(it))
-            if it.peek() is None:
-                break
         return ps
 
     def __str__(self):
@@ -70,12 +70,12 @@ class PatchedFile(object):
     _RE_TARGET_HEADER = re.compile(
         r'^\+\+\+ (?P<filename>[^\t\n]+)(?:\t(?P<timestamp>[^\n]+))?')
 
-    _source_header = attr.ib(repr=False)
-    _target_header = attr.ib(repr=False)
-    source_file = attr.ib()
-    target_file = attr.ib()
-    source_timestamp = attr.ib()
-    target_timestamp = attr.ib()
+    _source_header = attr.ib(default=None, repr=False)
+    _target_header = attr.ib(default=None, repr=False)
+    source_file = attr.ib(default=None)
+    target_file = attr.ib(default=None)
+    source_timestamp = attr.ib(default=None)
+    target_timestamp = attr.ib(default=None)
     hunks = attr.ib(default=attr.Factory(list), repr=False)
     git_header = attr.ib(default=None)
 
@@ -92,6 +92,9 @@ class PatchedFile(object):
         git_header = None
         if GitExtendedHeader._is_start_line(it.peek()):
             git_header = GitExtendedHeader._from_peekable(it)
+        if it.peek() is None:
+            # This happens for a git patching adding a new empty file.
+            return cls(git_header=git_header)
         source_line = next(it)
         source_match = PatchedFile._RE_SOURCE_HEADER.match(source_line)
         if not source_match:
@@ -103,30 +106,68 @@ class PatchedFile(object):
         target_match = PatchedFile._RE_TARGET_HEADER.match(target_line)
         if not target_match:
             it.exception("malformed +++ line")
-        obj = cls(
+        source_file = source_match.group('filename')
+        target_file = target_match.group('filename')
+        if git_header:
+            if source_file.startswith('a/'):
+                source_file = source_file[2:]
+            if target_file.startswith('b/'):
+                target_file = target_file[2:]
+        if source_file == '/dev/null':
+            source_file = None
+        if target_file == '/dev/null':
+            target_file = None
+        patched_file = cls(
             source_header=source_line,
             target_header=target_line,
-            source_file=source_match.group('filename'),
+            source_file=source_file,
             source_timestamp=source_match.group('timestamp'),
-            target_file=target_match.group('filename'),
+            target_file=target_file,
             target_timestamp=target_match.group('timestamp'),
             git_header=git_header)
+        print(repr(patched_file))
         while True:
             next_line = it.peek()
             if next_line is None or not Hunk._is_header_line(next_line):
                 break
-            obj.hunks.append(Hunk._from_peekable(it))
-        return obj
+            patched_file.hunks.append(Hunk._from_peekable(it))
+        return patched_file
 
     def __str__(self):
         parts = []
         if self.git_header:
             parts.append(str(self.git_header))
-        parts.append(self._source_header)
-        parts.append(self._target_header)
+        if self._source_header is not None:
+            parts.append(self._source_header)
+        if self._target_header is not None:
+            parts.append(self._target_header)
         for hunk in self.hunks:
             parts.append(str(hunk))
         return '\n'.join(parts)
+
+    @property
+    def added(self):
+        if not self.hunks:
+            return self.source_file is None
+        elif len(self.hunks) == 1:
+            hunk = self.hunks[0]
+            return (hunk.source_start, hunk.source_length) == (0, 0)
+        elif len(self.hunks) > 1:
+            return False
+
+    @property
+    def removed(self):
+        if not self.hunks:
+            return self.target_file is None
+        elif len(self.hunks) == 1:
+            hunk = self.hunks[0]
+            return (hunk.target_start, hunk.target_length) == (0, 0)
+        elif len(self.hunks) > 1:
+            return False
+
+    @property
+    def modified(self):
+        return not self.added and not self.removed
 
 
 @attr.s
@@ -248,11 +289,11 @@ class GitExtendedHeader(object):
     _RE_HEADER = re.compile(
         r'^diff --git '
         r'"?a/(?P<source_name>.*?)"? '
-        r'"?b/(?P<target_name>.*?)"?')
+        r'"?b/(?P<target_name>.*?)"?$')
 
     @classmethod
     def _is_start_line(cls, line):
-        return line.startswith('diff --git ')
+        return cls._RE_HEADER.match(line) is not None
 
     @classmethod
     def _from_peekable(cls, it):
@@ -334,3 +375,5 @@ if __name__ == '__main__':
                     print('hunk:', repr(hunk))
                     for line in hunk.lines:
                         print('line:', repr(line))
+
+            # print(patch_set)
