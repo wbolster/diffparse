@@ -42,7 +42,9 @@ class PatchSet(object):
         return not bool(self.preamble or self.patched_files)
 
     @classmethod
-    def _from_peekable(cls, it):
+    def _from_peekable(cls, it, allow_preamble):
+        # TODO: raise exception in eof is reached without encountering
+        # any patched file at all
         ps = PatchSet()
         while True:
             next_line = it.peek()
@@ -52,8 +54,13 @@ class PatchSet(object):
                 ps.patched_files.append(PatchedFile._from_peekable(it))
             elif ps.patched_files:
                 break
-            else:
+            elif allow_preamble:
                 ps.preamble.append(next(it))
+            else:
+                it.exception(
+                    "invalid start of patch set (try allowing a preamble?)")
+        if not ps.patched_files:
+            it.exception("no patch set found")
         return ps
 
     def __str__(self):
@@ -93,8 +100,11 @@ class PatchedFile(object):
         if GitExtendedHeader._is_start_line(it.peek()):
             git_header = GitExtendedHeader._from_peekable(it)
         if it.peek() is None:
-            # This happens for a git patching adding a new empty file.
-            return cls(git_header=git_header)
+            # This happens for a git patch adding a new empty file.
+            return cls(
+                source_file=git_header.source_file,
+                target_file=git_header.target_file,
+                git_header=git_header)
         source_line = next(it)
         source_match = PatchedFile._RE_SOURCE_HEADER.match(source_line)
         if not source_match:
@@ -204,17 +214,14 @@ class Hunk(object):
             section=section)
         source_seen = target_seen = 0
         while True:
-            line = next(it, None)
-            if line is None:
-                it.exception("incomplete patch hunk")
-            line_obj = Line._from_string(line)
-            if line_obj.type != '+':
-                line_obj.source_line = hunk.source_start + source_seen
+            line = Line._from_peekable(it)
+            if line.type != '+':
+                line.source_line = hunk.source_start + source_seen
                 source_seen += 1
-            if line_obj.type != '-':
-                line_obj.target_line = hunk.target_start + target_seen
+            if line.type != '-':
+                line.target_line = hunk.target_start + target_seen
                 target_seen += 1
-            hunk.lines.append(line_obj)
+            hunk.lines.append(line)
             if (hunk.source_length == source_seen and
                     hunk.target_length == target_seen):
                 break
@@ -246,13 +253,17 @@ class Line(object):
         return self._line
 
     @classmethod
-    def _from_string(cls, s):
-        obj = cls(
-            line=s,
-            type=s[0],
-            value=s[1:])
-        assert obj.type in (' -+')
-        return obj
+    def _from_peekable(cls, it):
+        s = next(it, None)
+        if s is None:
+            it.exception("incomplete patch hunk")
+        elif not s:
+            it.exception("empty diff line")
+        type = s[0]
+        if type not in (' -+'):
+            it.exception("diff line must start with +, -, or space")
+        value = s[1:]
+        return cls(line=s, type=type, value=value)
 
     @property
     def added(self):
@@ -270,8 +281,8 @@ class Line(object):
 @attr.s
 class GitExtendedHeader(object):
     _lines = attr.ib(repr=False)
-    source_name = attr.ib()
-    target_name = attr.ib()
+    source_file = attr.ib()
+    target_file = attr.ib()
     old_mode = attr.ib(default=None)
     new_mode = attr.ib(default=None)
     deleted_file_mode = attr.ib(default=None)
@@ -288,8 +299,8 @@ class GitExtendedHeader(object):
 
     _RE_HEADER = re.compile(
         r'^diff --git '
-        r'"?a/(?P<source_name>.*?)"? '
-        r'"?b/(?P<target_name>.*?)"?$')
+        r'"?a/(?P<source_file>.*?)"? '
+        r'"?b/(?P<target_file>.*?)"?$')
 
     @classmethod
     def _is_start_line(cls, line):
@@ -306,12 +317,12 @@ class GitExtendedHeader(object):
         m = cls._RE_HEADER.match(line)
         if not m:
             it.exception("malformed extended git patch header line")
-        source_name, target_name = m.group('source_name', 'target_name')
+        source_file, target_file = m.group('source_file', 'target_file')
         if '"' in line:
             # Attempt to unescape things like \t.
-            source_name = source_name.encode('ascii').decode('unicode_escape')
-            target_name = target_name.encode('ascii').decode('unicode_escape')
-        header = cls([line], source_name, target_name)
+            source_file = source_file.encode('ascii').decode('unicode_escape')
+            target_file = target_file.encode('ascii').decode('unicode_escape')
+        header = cls([line], source_file, target_file)
 
         while True:
             next_line = it.peek()
@@ -358,8 +369,8 @@ class GitExtendedHeader(object):
         return '\n'.join(self._lines)
 
 
-def parse_patch_sets(fp):
+def parse_patch_sets(fp, allow_preamble=False):
     it = PeekableFile(fp)
     while it.peek() is not None:
-        patch_set = PatchSet._from_peekable(it)
+        patch_set = PatchSet._from_peekable(it, allow_preamble=allow_preamble)
         yield patch_set
