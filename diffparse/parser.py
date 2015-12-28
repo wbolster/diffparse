@@ -1,6 +1,5 @@
 import itertools
 import re
-import sys
 
 import attr
 
@@ -43,8 +42,6 @@ class PatchSet(object):
 
     @classmethod
     def _from_peekable(cls, it, allow_preamble):
-        # TODO: raise exception in eof is reached without encountering
-        # any patched file at all
         ps = PatchSet()
         while True:
             next_line = it.peek()
@@ -85,26 +82,31 @@ class PatchedFile(object):
     target_timestamp = attr.ib(default=None)
     hunks = attr.ib(default=attr.Factory(list), repr=False)
     git_header = attr.ib(default=None)
+    svn_header = attr.ib(default=None)
 
     @classmethod
     def _is_start_line(cls, line):
         if cls._RE_SOURCE_HEADER.match(line) is not None:
             return True
-        elif GitExtendedHeader._is_start_line(line):
+        elif GitHeader._is_start_line(line):
+            return True
+        elif SubversionHeader._is_start_line(line):
             return True
         return False
 
     @classmethod
     def _from_peekable(cls, it):
-        git_header = None
-        if GitExtendedHeader._is_start_line(it.peek()):
-            git_header = GitExtendedHeader._from_peekable(it)
+        git_header = svn_header = None
+        if GitHeader._is_start_line(it.peek()):
+            git_header = GitHeader._from_peekable(it)
         if it.peek() is None:
             # This happens for a git patch adding a new empty file.
             return cls(
                 source_file=git_header.source_file,
                 target_file=git_header.target_file,
                 git_header=git_header)
+        if not git_header and SubversionHeader._is_start_line(it.peek()):
+            svn_header = SubversionHeader._from_peekable(it)
         source_line = next(it)
         source_match = PatchedFile._RE_SOURCE_HEADER.match(source_line)
         if not source_match:
@@ -134,8 +136,8 @@ class PatchedFile(object):
             source_timestamp=source_match.group('timestamp'),
             target_file=target_file,
             target_timestamp=target_match.group('timestamp'),
-            git_header=git_header)
-        print(repr(patched_file))
+            git_header=git_header,
+            svn_header=svn_header)
         while True:
             next_line = it.peek()
             if next_line is None or not Hunk._is_header_line(next_line):
@@ -279,7 +281,7 @@ class Line(object):
 
 
 @attr.s
-class GitExtendedHeader(object):
+class GitHeader(object):
     _lines = attr.ib(repr=False)
     source_file = attr.ib()
     target_file = attr.ib()
@@ -313,7 +315,8 @@ class GitExtendedHeader(object):
         #   diff --git "a/a b c\n\txyz" "b/a b c\n\txyz"
         #   diff --git a/a b b/a b
         #   diff --git a/b/b a/b/a b b/b/b a/b/a b
-        line = next(it)
+        line = next(it, None)
+        assert line is not None
         m = cls._RE_HEADER.match(line)
         if not m:
             it.exception("malformed extended git patch header line")
@@ -367,6 +370,35 @@ class GitExtendedHeader(object):
 
     def __str__(self):
         return '\n'.join(self._lines)
+
+
+@attr.s
+class SubversionHeader(object):
+    _lines = attr.ib(repr=False)
+    source_file = attr.ib()
+
+    _RE_HEADER = re.compile(r'^Index: (?P<source_file>.+)')
+    _RE_SEPARATOR = re.compile('^={5,}$')
+
+    @classmethod
+    def _is_start_line(cls, line):
+        return cls._RE_HEADER.match(line) is not None
+
+    @classmethod
+    def _from_peekable(cls, it):
+        line = next(it, None)
+        assert line is not None
+        m = cls._RE_HEADER.match(line)
+        if not m:
+            it.exception("malformed subversion index line")
+        lines = [line]
+        line = next(it, None)
+        if line is None:
+            it.exception("subversion header separator line is missing")
+        elif not cls._RE_SEPARATOR.match(line):
+            it.exception("malformed subversion header separator")
+        lines.append(line)
+        return cls(lines=lines, source_file=m.group('source_file'))
 
 
 def parse_patch_sets(fp, allow_preamble=False):
