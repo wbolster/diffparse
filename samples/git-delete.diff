@@ -1,4 +1,3 @@
-Index: tools/clang_check/README.chromium
 diff --git a/tools/clang_check/README.chromium b/tools/clang_check/README.chromium
 deleted file mode 100644
 index fcaa7e0e94bb604a026c4f478fecb1c5796f5413..0000000000000000000000000000000000000000
