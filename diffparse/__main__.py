@@ -5,7 +5,7 @@ from . import parse_patch_sets
 
 def main():
     with open(sys.argv[1]) as fp:
-        for patch_set in parse_patch_sets(fp):
+        for patch_set in parse_patch_sets(fp, allow_preamble=True):
             print('patch set:', repr(patch_set))
             for patched_file in patch_set.patched_files:
                 print('patched file:', repr(patched_file))

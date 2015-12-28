@@ -408,6 +408,14 @@ class SubversionHeader(object):
 
 def parse_patch_sets(fp, allow_preamble=False):
     it = PeekableFile(fp)
-    while it.peek() is not None:
-        patch_set = PatchSet._from_peekable(it, allow_preamble=allow_preamble)
-        yield patch_set
+    while True:
+        next_line = it.peek()
+        if next_line is None:
+            break
+        elif not next_line.strip():
+            # Silently ignore leading and trailing white-space only lines.
+            next(it)
+        else:
+            patch_set = PatchSet._from_peekable(
+                it, allow_preamble=allow_preamble)
+            yield patch_set
