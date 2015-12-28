@@ -1,0 +1,6 @@
+Index: test-file.txt
+===================================================================
+--- test-file.txt	(revision 0)
++++ test-file.txt	(revision 0)
+@@ -0,0 +1 @@
++This is a test file for svn-basics.
