@@ -70,9 +70,9 @@ class PatchSet(object):
 @attr.s
 class PatchedFile(object):
     _RE_SOURCE_HEADER = re.compile(
-        r'^--- (?P<filename>[^\t\n]+)(?:\t(?P<timestamp>[^\n]+))?')
+        r'^--- (?P<filename>[^\t\n]+)(?:\t(?P<timestamp_or_meta>[^\n]+))?')
     _RE_TARGET_HEADER = re.compile(
-        r'^\+\+\+ (?P<filename>[^\t\n]+)(?:\t(?P<timestamp>[^\n]+))?')
+        r'^\+\+\+ (?P<filename>[^\t\n]+)(?:\t(?P<timestamp_or_meta>[^\n]+))?')
 
     _source_header = attr.ib(default=None, repr=False)
     _target_header = attr.ib(default=None, repr=False)
@@ -133,9 +133,9 @@ class PatchedFile(object):
             source_header=source_line,
             target_header=target_line,
             source_file=source_file,
-            source_timestamp=source_match.group('timestamp'),
+            source_timestamp=source_match.group('timestamp_or_meta'),
             target_file=target_file,
-            target_timestamp=target_match.group('timestamp'),
+            target_timestamp=target_match.group('timestamp_or_meta'),
             git_header=git_header,
             svn_header=svn_header)
         while True:
@@ -260,7 +260,8 @@ class Line(object):
         if s is None:
             it.exception("incomplete patch hunk")
         elif not s:
-            it.exception("empty diff line")
+            # Assume white-space trimmed empty context line.
+            s = ' '
         type = s[0]
         if type not in (' -+'):
             it.exception("diff line must start with +, -, or space")
@@ -378,7 +379,7 @@ class SubversionHeader(object):
     source_file = attr.ib()
 
     _RE_HEADER = re.compile(r'^Index: (?P<source_file>.+)')
-    _RE_SEPARATOR = re.compile('^={5,}$')
+    _header_terminator_line = '=' * 67
 
     @classmethod
     def _is_start_line(cls, line):
@@ -395,7 +396,7 @@ class SubversionHeader(object):
         line = next(it, None)
         if line is None:
             it.exception("subversion header separator line is missing")
-        elif not cls._RE_SEPARATOR.match(line):
+        elif line != cls._header_terminator_line:
             it.exception("malformed subversion header separator")
         lines.append(line)
         return cls(lines=lines, source_file=m.group('source_file'))
