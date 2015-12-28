@@ -1,0 +1,47 @@
+diff --git a/Git/config b/Git/config
+index 765789a..94758c1 100644
+--- a/Git/config
++++ b/Git/config
+@@ -92,6 +92,9 @@ autosetuprebase = always
+ [color]
+ ui = auto
+ 
++[core]
++excludesfile = ~/.gitignore_global
++
+ [diff]
+ tool = gvimdiff
+ 
+diff --git a/Git/ignore_global b/Git/ignore_global
+new file mode 100644
+index 0000000..b817176
+--- /dev/null
++++ b/Git/ignore_global
+@@ -0,0 +1,13 @@
++# Backup files
++*~
++
++# Mac OSX
++.DS_Store
++
++# Python
++*.py[co]
++__pycache__/
++
++# direnv
++.direnv/
++.envrc
+diff --git a/symlinks.conf b/symlinks.conf
+index 05409b4..5adefff 100644
+--- a/symlinks.conf
++++ b/symlinks.conf
+@@ -3,6 +3,9 @@
+ ~/.bash_logout -> Bash/bash_logout
+ ~/.bash_profile -> Bash/bash_profile
+ 
++# Git
++~/.gitignore_global -> Git/ignore_global
++
+ # Less
+ ~/.less -> less/less
+ ~/.lesskey -> less/lesskey

@@ -1,0 +1,16 @@
+Index: tools/clang_check/README.chromium
+diff --git a/tools/clang_check/README.chromium b/tools/clang_check/README.chromium
+deleted file mode 100644
+index fcaa7e0e94bb604a026c4f478fecb1c5796f5413..0000000000000000000000000000000000000000
+--- a/tools/clang_check/README.chromium
++++ /dev/null
+@@ -1,9 +0,0 @@
+-These are terrible, terrible hacks.
+-
+-They are meant to be temporary. clang currently doesn't allow running a plugin
+-AND doing the normal codegen process. We want our syntax complaining plugins to
+-run during normal compile, but for now, you can user run_plugin.sh to hack the
+-build system to do a syntax check.
+-
+-Also see http://code.google.com/p/chromium/wiki/WritingClangPlugins
+-

@@ -1,0 +1,207 @@
+commit e29fb3970370ccb99b33226e4957b30456019b8b
+Author: Wouter Bolsterlee <uws@xs4all.nl>
+Date:   2013-10-27 16:09:33 +0100
+
+    Implement telwoord.ordinal() for ordinal numerals
+
+diff --git a/README.rst b/README.rst
+index 3bbcbe9..30ff77a 100644
+--- a/README.rst
++++ b/README.rst
+@@ -70,6 +70,32 @@ To forcibly spell out all the numbers, pass ``friendly=False``::
+        1000000   een miljoen
+       12345678   twaalf miljoen driehonderdvijfenveertigduizend zeshonderdachtenzeventig
+ 
++In addition to cardinal numbers, you can also convert a number into its ordinal
++string representation using ``telwoord.ordinal()``::
++
++    >>> from telwoord import ordinal
++
++    >>> for n in numbers: print("{0: 10d}   {1}".format(n, ordinal(n)))
++             0   nulde
++             1   eerste
++             2   tweede
++             3   derde
++            19   negentiende
++            20   twintigste
++            30   dertigste
++            31   31e
++           100   honderdste
++           200   tweehonderdste
++           215   215e
++           300   driehonderdste
++         14999   14999e
++         15000   15 duizendste
++       1000000   1 miljoenste
++      12345678   12345678e
++
++The ``telwoord.ordinal()`` function also takes a ``friendly`` argument that
++works the same way as for ``telwoord.cardinal()``.
++
+ 
+ Spelling rules and style recommendations
+ ========================================
+@@ -118,5 +144,4 @@ To test against multiple Python versions::
+ 
+ Possible future work:
+ 
+-* Ordinal numbers
+-* Fractions
++* Fractions, e.g. "tweederde", "twaalf tachtigste"
+diff --git a/telwoord/__init__.py b/telwoord/__init__.py
+index b367ec3..03a8de9 100644
+--- a/telwoord/__init__.py
++++ b/telwoord/__init__.py
+@@ -2,4 +2,4 @@
+ Convert numbers into their Dutch written form.
+ """
+ 
+-from .telwoord import cardinal
++from .telwoord import cardinal, ordinal
+diff --git a/telwoord/telwoord.py b/telwoord/telwoord.py
+index e8608db..0209ea8 100644
+--- a/telwoord/telwoord.py
++++ b/telwoord/telwoord.py
+@@ -2,6 +2,8 @@
+ 
+ from __future__ import unicode_literals
+ 
++import re
++
+ try:
+     unicode
+ except NameError:
+@@ -22,9 +24,15 @@ BILLION = 10 ** 9
+ TRILLION = 10 ** 12
+ QUADRILLION = 10 ** 15
+ 
++# Regex for numbers that should get a "-de" suffix in their ordinal form
++RE_ORDINAL_SUFFIX_DE = re.compile(
++    '(?:nul|twee|vier|vijf|zes|zeven|negen|tien|elf|twaalf)$')
++
+ 
+ def cardinal(n, friendly=True):
+-    """Convert a number into its Dutch written form.
++    """Convert a number into its Dutch written form for cardinal numerals.
++
++    This function converts 1 into "een", 2 into "twee", and so on.
+ 
+     If `friendly` is `True` (the default), this function uses various
+     heuristics for "human friendly" results.
+@@ -120,5 +128,32 @@ def cardinal(n, friendly=True):
+     return unicode(n)
+ 
+ 
+-def ordinal(n):
+-    raise NotImplementedError("Ordinal numbers not yet implemented")
++def ordinal(n, friendly=True):
++    """Convert a number into its Dutch written form for ordinal numerals.
++
++    This function converts 1 into "eerste", 2 into "tweede", and so on.
++
++    See the ``cardinal()`` function for a description of the
++    ``friendly`` argument.
++    """
++
++    c = cardinal(n, friendly=friendly)
++
++    if c == unicode(n):
++        # No words at all. Add -e suffix, e.g. "123e"
++        return c + 'e'
++
++    # Special case for "eerste"
++    if c.endswith('een'):
++        return c[:-1] + 'rste'
++
++    # Special case for "derde"
++    if c.endswith('drie'):
++        return c[:-3] + 'erde'
++
++    # Several numbers: "-de"
++    if RE_ORDINAL_SUFFIX_DE.search(c):
++        return c + "de"
++
++    # Everything else: "-ste"
++    return c + 'ste'
+diff --git a/test_telwoorden.py b/test_telwoorden.py
+index 458ed85..fbff628 100644
+--- a/test_telwoorden.py
++++ b/test_telwoorden.py
+@@ -2,7 +2,7 @@
+ 
+ from __future__ import unicode_literals
+ 
+-from telwoord import cardinal
++from telwoord import cardinal, ordinal
+ 
+ 
+ def test_cardinal():
+@@ -95,3 +95,68 @@ def test_friendly_cardinals():
+ 
+     for n, w in inputs.items():
+         assert cardinal(n) == w
++
++
++def test_ordinals():
++    inputs = {
++        0: "nulde",
++        1: "eerste",
++        2: "tweede",
++        3: "derde",
++        4: "vierde",
++        5: "vijfde",
++        6: "zesde",
++        7: "zevende",
++        8: "achtste",
++        9: "negende",
++        10: "tiende",
++        11: "elfde",
++        12: "twaalfde",
++        13: "dertiende",
++        14: "veertiende",
++        15: "vijftiende",
++        16: "zestiende",
++        17: "zeventiende",
++        18: "achttiende",
++        19: "negentiende",
++        20: "twintigste",
++        21: "eenentwintigste",
++        30: "dertigste",
++        50: "vijftigste",
++        100: "honderdste",
++        101: "honderdeerste",
++        300: "driehonderdste",
++        1000: "duizendste",
++        1001: "duizend eerste",
++        1012: "duizend twaalfde",
++        1000000: "een miljoenste",
++        2000000: "twee miljoenste",
++        1000000000: "een miljardste",
++
++        # Negative numbers
++        -1: "min eerste",
++        -12: "min twaalfde",
++    }
++
++    for n, w in inputs.items():
++        assert ordinal(n, friendly=False) == w
++
++
++def test_friendly_ordinals():
++    inputs = {
++        0: "nulde",
++        1: "eerste",
++        100: "honderdste",
++        4000: "vierduizendste",
++        301: "301e",
++        1000: "duizendste",
++        43000: "43 duizendste",
++        10000000: "10 miljoenste",
++
++        # Negative numbers
++        -12: "min twaalfde",
++        -312: "-312e",
++    }
++
++    for n, w in inputs.items():
++        assert ordinal(n) == w

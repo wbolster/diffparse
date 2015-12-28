@@ -1,0 +1,5 @@
+Index: tools/run_local_server.sh
+diff --git a/tools/run_local_server.py b/tools/run_local_server.sh
+similarity index 100%
+rename from tools/run_local_server.py
+rename to tools/run_local_server.sh
