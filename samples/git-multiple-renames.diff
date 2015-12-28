@@ -1,0 +1,8 @@
+diff --git a/samples/empty-file.txt b/samples/empty.txt
+similarity index 100%
+rename from samples/empty-file.txt
+rename to samples/empty.txt
+diff --git a/samples/git-add-empty-file.patch b/samples/git-add-empty-file.diff
+similarity index 100%
+rename from samples/git-add-empty-file.patch
+rename to samples/git-add-empty-file.diff
