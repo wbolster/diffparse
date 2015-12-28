@@ -47,7 +47,7 @@ class PatchSet(object):
             next_line = it.peek()
             if it.peek() is None:
                 break
-            if PatchedFile._is_start_line(next_line):
+            if PatchedFile._is_start_line_or_header(next_line):
                 ps.patched_files.append(PatchedFile._from_peekable(it))
             elif ps.patched_files:
                 break
@@ -86,21 +86,25 @@ class PatchedFile(object):
 
     @classmethod
     def _is_start_line(cls, line):
-        if cls._RE_SOURCE_HEADER.match(line) is not None:
-            return True
-        elif GitHeader._is_start_line(line):
-            return True
-        elif SubversionHeader._is_start_line(line):
-            return True
-        return False
+        return cls._RE_SOURCE_HEADER.match(line) is not None
+
+    @classmethod
+    def _is_start_line_or_header(cls, line):
+        return (
+            cls._is_start_line(line) or
+            GitHeader._is_start_line(line) or
+            SubversionHeader._is_start_line(line))
 
     @classmethod
     def _from_peekable(cls, it):
         git_header = svn_header = None
         if GitHeader._is_start_line(it.peek()):
             git_header = GitHeader._from_peekable(it)
-        if it.peek() is None:
-            # This happens for a git patch adding a new empty file.
+        next_line = it.peek()
+        if next_line is None or GitHeader._is_start_line(next_line):
+            # This happens for a git patch adding a new empty file,
+            # possibly followed by another patched file (with its own
+            # 'diff --git' header).
             return cls(
                 source_file=git_header.source_file,
                 target_file=git_header.target_file,
@@ -332,7 +336,7 @@ class GitHeader(object):
             next_line = it.peek()
             if next_line is None:
                 break
-            if next_line.startswith('--- '):
+            if PatchedFile._is_start_line_or_header(next_line):
                 break
             line = next(it)
             header._lines.append(line)
