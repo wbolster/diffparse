@@ -399,9 +399,9 @@ class SubversionHeader(object):
         lines = [line]
         line = next(it, None)
         if line is None:
-            it.exception("subversion header separator line is missing")
+            it.exception("subversion header terminator line is missing")
         elif line != cls._header_terminator_line:
-            it.exception("malformed subversion header separator")
+            it.exception("malformed subversion header terminator")
         lines.append(line)
         return cls(lines=lines, source_file=m.group('source_file'))
 
